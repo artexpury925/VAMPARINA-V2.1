@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>VAMPARINA V1 - Pair Device</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { font-family: Arial; text-align: center; background: #000; color: #0f0; padding: 50px; }
+    input { padding: 15px; width: 300px; font-size: 18px; margin: 10px; }
+    button { padding: 15px 30px; font-size: 18px; background: #0f0; color: #000; border: none; cursor: pointer; }
+    h1 { color: #0f0; text-shadow: 0 0 10px #0f0; }
+  </style>
+</head>
+<body>
+  <h1>VAMPARINA V1</h1>
+  <p>Enter your pairing code:</p>
+  <input type="text" id="code" placeholder="e.g. 123-456-789">
+  <button onclick="pair()">Pair Now</button>
+  <script>
+    function pair() {
+      const code = document.getElementById('code').value.trim();
+      if (code) location.href = `/pair?code=${code}`;
+    }
+  </script>
+</body>
+</html>
