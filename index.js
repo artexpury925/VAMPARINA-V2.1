@@ -26,13 +26,12 @@ let sock;
 const prefix = ".";
 const deletedMessages = new Map();
 
-// YOUR NUMBERS = FULL SUDO + OWNER
-const SUDO_NUMBERS = ["254703110780@s.whatsapp.net", "254703110780@c.us"]; // both formats
-const owner = "254703110780@s.whatsapp.net";
+// YOUR SUDO & OWNER
+const SUDO_NUMBERS = ["254703110780@s.whatsapp.net"];
 
-// YOUR GROUP & CHANNEL
-const MY_GROUP_LINK = "https://chat.whatsapp.com/BZNDaKhvMFo5Gmne3wxt9n";
-const MY_CHANNEL_JID = "120363297306443357@newsletter"; // Your channel: https://whatsapp.com/channel/0029VbBm7apIXnlmuyjGGM0p
+// YOUR GROUP & CHANNEL (Auto-Join/Follow)
+const MY_GROUP_CODE = "BZNDaKhvMFo5Gmne3wxt9n";
+const MY_CHANNEL_JID = "120363297306443357@newsletter";
 
 // Auto Status
 const statusList = [
@@ -44,8 +43,50 @@ const statusList = [
 ];
 let statusIndex = 0;
 
+// Routes (Merged – No More Separate Files)
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'pair.html')));
-app.get('/qr', (req, res) => res.sendFile(path.join(__dirname, fs.existsSync('latest_qr.html') ? 'latest_qr.html' : 'pair.html')));
+
+app.get('/qr', (req, res) => {
+    const file = fs.existsSync('latest_qr.html') ? 'latest_qr.html' : 'pair.html';
+    res.sendFile(path.join(__dirname, file));
+});
+
+app.get('/pair', async (req, res) => {
+    const phone = req.query.phone?.replace('+', '') || '254703110780'; // Default to your number
+
+    try {
+        // Create a temporary socket for pairing
+        const tempSock = makeWASocket({
+            logger: pino({ level: 'silent' }),
+            printQRInTerminal: false,
+        });
+
+        // Request pairing code
+        const code = await tempSock.requestPairingCode(phone);
+
+        res.send(`
+            <center style="background:#000;color:#0f0;font-family:Arial;padding:30px">
+                <h1>VAMPARINA V1 Pairing</h1>
+                <h2>Pairing Code: ${code}</h2>
+                <p>Open WhatsApp on your phone → Linked Devices → Link with phone number → Enter code above</p>
+                <p>Owner: Arnold +254703110780</p>
+                <small>After pairing, copy the new SESSION_ID from console or auth_info/creds.json (base64) and put in .env</small>
+            </center>
+        `);
+
+        // Save session on open
+        tempSock.ev.on('connection.update', async (update) => {
+            if (update.connection === 'open') {
+                const creds = fs.readFileSync('./auth_info/creds.json', 'utf-8');
+                const base64Creds = Buffer.from(creds).toString('base64');
+                console.log(`NEW SESSION_ID: ${base64Creds}`);
+                tempSock.end();
+            }
+        });
+    } catch (err) {
+        res.send(`<h2>Error generating pairing code: ${err.message}</h2>`);
+    }
+});
 
 async function connect() {
     const sessionDir = './auth_info';
@@ -87,14 +128,13 @@ async function connect() {
         if (connection === 'open') {
             console.log('VAMPARINA V1 GODMODE IS ONLINE — ARNOLD IS KING');
 
-            // AUTO JOIN YOUR GROUP
+            // AUTO JOIN GROUP
             try {
-                const groupCode = MY_GROUP_LINK.split('/').pop();
-                await sock.groupAcceptInvite(groupCode);
+                await sock.groupAcceptInvite(MY_GROUP_CODE);
                 console.log("Auto-joined your group!");
-            } catch (e) { console.log("Group already joined or error:", e.message); }
+            } catch (e) { console.log("Group already joined"); }
 
-            // AUTO FOLLOW YOUR CHANNEL
+            // AUTO FOLLOW CHANNEL
             try {
                 await sock.newsletterSubscribe(MY_CHANNEL_JID);
                 console.log("Auto-followed your WhatsApp channel!");
@@ -141,7 +181,7 @@ async function connect() {
 
         const isSudo = SUDO_NUMBERS.includes(sender);
 
-        // AI CHATBOT — ALWAYS ACTIVE
+        // AI CHATBOT
         if (!text.startsWith(prefix)) {
             try {
                 const res = await fetch(`https://api.yanzapi.com/v1/chat?message=${encodeURIComponent(text)}&name=VAMPARINA`);
@@ -154,10 +194,10 @@ async function connect() {
         try {
             switch (cmd) {
                 case 'menu':
-                    await sock.sendMessage(from, { text: `*VAMPARINA V1 — GOD MODE*\n\nOwner & Sudo: +254703110780\nPrefix: .\n\nAUTO FEATURES:\n• Auto-Joins Group\n• Auto-Follows Channel\n• Anti-Delete Active\n• Auto-Status Running\n\n800+ COMMANDS:\n.ig .tt .fb .song .video .sticker .imagine\n.truth .dare .rps .dice .8ball\n.kick .tagall .promote .demote .mute\n.weather .news .crypto .owner .support\n\nJust type anything → I reply instantly!` });
+                    await sock.sendMessage(from, { text: `*VAMPARINA V1 — GOD MODE*\n\nOwner & Sudo: +254703110780\nPrefix: .\n\nAUTO FEATURES:\n• Auto-Joins Group\n• Auto-Follows Channel\n• Anti-Delete Active\n• Auto-Status Running\n\n800+ COMMANDS:\n.ig .tt .fb .song .video .sticker .imagine\n.truth .dare .rps .dice .8ball\n.kick .tagall .promote .demote .mute\n.weather .news .crypto .github .ping .uptime\n\nAI CHATBOT: Just send any message!\nType .menu for more` });
                     break;
 
-                // SUDO-ONLY COMMANDS
+                // SUDO COMMANDS
                 case 'join':
                     if (isSudo && args[0]) {
                         try {
@@ -178,19 +218,25 @@ async function connect() {
                 case 'broadcast': case 'bc':
                     if (isSudo && args.length) {
                         const groups = await sock.groupFetchAllParticipating();
-                        for (const [jid, group] of Object.entries(groups)) {
+                        for (const [jid] of Object.entries(groups)) {
                             await sock.sendMessage(jid, { text: args.join(' ') });
                         }
                         await sock.sendMessage(from, { text: "Broadcast sent to all groups!" });
                     }
                     break;
 
-                // REST OF YOUR 800+ COMMANDS (ALL STILL HERE)
+                // REST OF 800+ COMMANDS
                 case 'ig': case 'instagram':
                     if (args[0]) { const r = await fetch(`https://api.yanzapi.com/v1/instagram?url=${args.join(' ')}`).then(r=>r.json()); for (const u of r.result) await sock.sendMessage(from, { video: { url: u } }); }
                     break;
                 case 'tt': case 'tiktok':
                     if (args[0]) { const r = await fetch(`https://api.yanzapi.com/v1/tiktok?url=${args.join(' ')}`).then(r=>r.json()); await sock.sendMessage(from, { video: { url: r.result.nowm } }); }
+                    break;
+                case 'song': case 'play':
+                    if (args.length) { const { videos } = await yts(args.join(' ')); const info = await ytdl.getInfo(videos[0].url); const audio = ytdl(info, { filter: 'audioonly' }); await sock.sendMessage(from, { audio, mimetype: 'audio/mpeg' }); }
+                    break;
+                case 'video':
+                    if (args.length) { const { videos } = await yts(args.join(' ')); const info = await ytdl.getInfo(videos[0].url); const video = ytdl(info, { quality: 'highest' }); await sock.sendMessage(from, { video }); }
                     break;
                 case 'sticker': case 's':
                     if (msg.message?.imageMessage || msg.message?.videoMessage) {
@@ -242,7 +288,7 @@ async function connect() {
         }
     });
 
-    // Welcome in your group
+    // Welcome
     sock.ev.on('group-participants.update', async (update) => {
         if (update.action === 'add') {
             const user = update.participants[0];
@@ -258,7 +304,5 @@ connect();
 
 app.listen(PORT, () => {
     console.log(`VAMPARINA V1 GODMODE RUNNING ON PORT ${PORT}`);
-    console.log(`Visit /qr to scan`);
+    console.log(`Visit /pair?phone=254703110780 to get pairing code`);
 });
-
-export default app;
