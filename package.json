@@ -1,6 +1,6 @@
 {
-  "name": "vamparina-v1-godmode",
-  "version": "10.0.0",
+  "name": "vamparina-multi-session",
+  "version": "1.0.0",
   "type": "module",
   "main": "index.js",
   "scripts": { "start": "node index.js" },
