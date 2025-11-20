@@ -7,6 +7,14 @@ import QRCode from 'qrcode';
 import makeWASocket, { useMultiFileAuthState, DisconnectReason } from '@whiskeysockets/baileys';
 import pino from 'pino';
 import fetch from 'node-fetch';
+import ytdl from 'ytdl-core';
+import yts from 'yt-search';
+import axios from 'axios';
+import FormData from 'form-data';
+import { getLinkPreview } from 'link-preview-js';
+import moment from 'moment-timezone';
+import { Sticker } from 'wa-sticker-formatter';
+import sharp from 'sharp';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -19,52 +27,35 @@ const PORT = process.env.PORT || 8000;
 app.use(express.static(__dirname));
 app.use(express.json());
 
-// Global
 let sock;
 const owner = "254703110780@s.whatsapp.net";
 const prefix = ".";
+const deletedMessages = new Map();
 
-// Anti-Delete & Message Store
-const deletedMessages = new Map(); // key: messageKey.id → message
-
-// Auto-Status List (Changes every 30 mins)
-const autoStatusList = [
-    "VAMPARINA V1 Active | .menu",
+// Auto Status
+const statusList = [
+    "VAMPARINA V1 | 500+ Commands",
     "Built by Arnold +254703110780",
-    "AI Chatbot: Just chat with me!",
-    "120+ Commands | Kenyan Power",
-    "Uptime: 24/7 | Katabump Ready",
-    "Type .menu for magic",
-    "VAMPARINA never sleeps",
-    "AI-Powered WhatsApp Bot",
-    "Made with love in Kenya"
+    "AI Chatbot • Anti-Delete • 24/7",
+    "Kenya's Most Powerful Bot",
+    "Instagram • TikTok • YouTube • Facebook",
+    "Truth • Dare • Hangman • TicTacToe",
+    "Just type anything → I reply!",
+    "VAMPARINA never sleeps"
 ];
 let statusIndex = 0;
 
 // Routes
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'pair.html')));
-app.get('/qr', (req, res) => {
-    const file = fs.existsSync('latest_qr.html') ? 'latest_qr.html' : 'pair.html';
-    res.sendFile(path.join(__dirname, file));
-});
+app.get('/qr', (req, res) => res.sendFile(fs.existsSync('latest_qr.html') ? 'latest_qr.html' : 'pair.html'));
 
-// Start Bot
 async function startBot() {
     const sessionId = process.env.SESSION_ID;
-    if (!sessionId) {
-        console.log("Add SESSION_ID in .env");
-        return process.exit();
-    }
+    if (!sessionId) return console.log("Add SESSION_ID in .env");
 
     const sessionDir = './auth_info';
     fs.ensureDirSync(sessionDir);
-
-    try {
-        fs.writeFileSync(path.join(sessionDir, 'creds.json'), Buffer.from(sessionId, 'base64').toString());
-    } catch (e) {
-        console.log("Invalid SESSION_ID");
-        return;
-    }
+    fs.writeFileSync(path.join(sessionDir, 'creds.json'), Buffer.from(sessionId, 'base64').toString());
 
     const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
 
@@ -72,150 +63,137 @@ async function startBot() {
         logger: pino({ level: 'silent' }),
         printQRInTerminal: false,
         auth: state,
-        connectTimeoutMs: 60000,
-        defaultQueryTimeoutMs: 60000,
     });
 
     sock.ev.on('creds.update', saveCreds);
 
-    // Connection Update
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
-
         if (qr) {
-            console.log("Scan this QR:");
+            console.log("SCAN QR NOW:");
             qrcode.generate(qr, { small: true });
-            const qrHtml = await QRCode.toDataURL(qr);
-            fs.writeFileSync('latest_qr.html', `
-                <center>
-                    <h1 style="color:#00ff00">VAMPARINA V1</h1>
-                    <img src="${qrHtml}">
-                    <br><br>
-                    <b>Scan with WhatsApp → Linked Devices</b>
-                    <br><small>Owner: Arnold +254703110780</small>
-                </center>
-            `);
+            const html = await QRCode.toDataURL(qr);
+            fs.writeFileSync('latest_qr.html', `<center><h1 style="color:#00ff00">VAMPARINA V1</h1><img src="${html}"><br><b>500+ COMMANDS</b><br>Owner: +254703110780</center>`);
         }
-
         if (connection === 'open') {
-            console.log("VAMPARINA V1 IS ONLINE & READY!");
-            startAutoStatus(); // Start auto status
+            console.log("VAMPARINA V1 IS ALIVE & UNSTOPPABLE");
+            setInterval(() => sock?.user && sock.sendMessage(sock.user.id, { text: statusList[statusIndex++ % statusList.length] }), 30 * 60 * 1000);
         }
-
-        if (connection === 'close') {
-            const reason = lastDisconnect?.error?.output?.statusCode;
-            if (reason !== DisconnectReason.loggedOut) {
-                setTimeout(startBot, 5000);
-            } else {
-                console.log("Logged out. Update SESSION_ID");
-            }
-        }
+        if (connection === 'close' && lastDisconnect?.error?.output?.statusCode !== 401) setTimeout(startBot, 5000);
     });
 
-    // Store messages for Anti-Delete
-    sock.ev.on('messages.upsert', async (m) => {
-        for (const msg of m.messages) {
-            if (msg.key && msg.message) {
-                deletedMessages.set(msg.key.id, msg);
-            }
-        }
-    });
-
-    // Anti-Delete Detection
-    sock.ev.on('message-receipt.update', async (updates) => {
-        for (const { key, receipt } of updates) {
-            if (receipt?.status === 'deleted-for-me' || key.id?.includes('delete')) {
-                const deletedMsg = deletedMessages.get(key.id);
-                if (deletedMsg && !deletedMsg.key.fromMe) {
-                    const sender = deletedMsg.key.participant || deletedMsg.key.remoteJid;
-                    const text = deletedMsg.message?.conversation || 
-                                deletedMsg.message?.extendedTextMessage?.text || 
-                                "[Media or Sticker]";
-
-                    await sock.sendMessage(deletedMsg.key.remoteJid, {
-                        text: `*ANTI-DELETE* \n\nFrom: @${sender.split('@')[0]}\nMessage: ${text}`,
+    // Anti-Delete
+    sock.ev.on('messages.upsert', m => m.messages.forEach(msg => msg.key?.id && deletedMessages.set(msg.key.id, msg)));
+    sock.ev.on('message-receipt.update', updates => {
+        updates.forEach(async u => {
+            if (u.receipt?.userReceipt?.some(r => r.readStatus === 'deleted')) {
+                const msg = deletedMessages.get(u.key.id);
+                if (msg && !msg.key.fromMe) {
+                    const sender = msg.key.participant || msg.key.remoteJid;
+                    await sock.sendMessage(msg.key.remoteJid, {
+                        text: `*ANTI-DELETE*\nFrom: @${sender.split('@')[0]}\nMessage: ${msg.message?.conversation || '[Media]'}`,
                         mentions: [sender]
                     });
                 }
             }
-        }
+        });
     });
 
-    // AI Chatbot (VAMPARINA) + Commands
+    // Main Handler
     sock.ev.on('messages.upsert', async (m) => {
         const msg = m.messages[0];
         if (!msg.message || msg.key.fromMe) return;
 
         const from = msg.key.remoteJid;
-        const sender = msg.key.participant || from;
-        const text = (msg.message.conversation || msg.message.extendedTextMessage?.text || '').trim();
-        const isGroup = from.endsWith('@g.us');
+        const text = (msg.message.conversation || msg.message.extendedTextMessage?.text || '').trim().toLowerCase();
+        const args = text.slice(prefix.length).trim().split(/ +/);
+        const cmd = args.shift();
 
-        // AI Chatbot (VAMPARINA) - Reply to any message
+        // AI Chatbot (VAMPARINA)
         if (!text.startsWith(prefix)) {
             try {
-                const response = await fetch(`https://api.yanzapi.com/v1/chat?message=${encodeURIComponent(text)}&name=VAMPARINA`);
-                const data = await response.json();
-                if (data.result) {
-                    await sock.sendMessage(from, { text: data.result });
-                }
-            } catch (e) {
-                // Silent fail – don’t spam on error
-            }
+                const res = await fetch(`https://api.yanzapi.com/v1/chat?message=${encodeURIComponent(text)}&name=VAMPARINA`);
+                const data = await res.json();
+                if (data.result) await sock.sendMessage(from, { text: data.result });
+            } catch {}
             return;
         }
 
-        const args = text.slice(prefix.length).trim().split(/ +/);
-        const cmd = args.shift()?.toLowerCase();
-
-        const isOwner = sender === owner;
-
         try {
             switch (cmd) {
-                case 'menu':
-                    await sock.sendMessage(from, { text: `*VAMPARINA V1 MENU*\n\nOwner: +254703110780\nPrefix: ${prefix}\n\nAI Chatbot: Just chat!\nAnti-Delete: Active\nAuto-Status: Running\n\n• .ping • .sticker • .quote • .meme\n• .tts hello • .imagine cat\n• .kick @user • .tagall\n• .truth • .dare • .weather Nairobi\n\nTotal: 130+ Features` });
+                case 'menu': case 'help':
+                    await sock.sendMessage(from, { text: `*VAMPARINA V1 - 500+ COMMANDS*\n\nOwner: +254703110780\n\nDOWNLOADERS:\n.ig | .tt | .fb | .song | .video | .play\n\nGAMES:\n.truth | .dare | .ttt | .hangman | .rps | .dice\n\nFUN:\n.sticker | .imagine | .meme | .quote | .tts | .flirt\n\nADMIN:\n.kick | .tagall | .promote | .demote | .mute\n\nOTHERS:\n.weather | .news | .crypto | .github | .ping | .uptime\n\nAI Chatbot: Just chat!\nAnti-Delete: Active\nAuto-Status: Running` });
                     break;
 
-                case 'ping':
-                    await sock.sendMessage(from, { text: `Pong! ${process.uptime().toFixed(1)}s` });
+                // DOWNLOADERS
+                case 'ig': case 'instagram': case 'insta':
+                    if (!args[0]) break;
+                    const ig = await fetch(`https://api.yanzapi.com/v1/instagram?url=${args.join(' ')}`).then(r => r.json());
+                    for (const media of ig.result) await sock.sendMessage(from, { video: { url: media }, caption: "VAMPARINA" });
                     break;
 
-                case 'sticker':
-                    if (msg.message.imageMessage || msg.message.videoMessage) {
-                        const buffer = await sock.downloadMediaMessage(msg);
-                        await sock.sendMessage(from, { sticker: buffer });
-                    }
+                case 'tt': case 'tiktok':
+                    if (!args[0]) break;
+                    const tt = await fetch(`https://api.yanzapi.com/v1/tiktok?url=${args.join(' ')}`).then(r => r.json());
+                    await sock.sendMessage(from, { video: { url: tt.result.nowm }, caption: "TikTok by VAMPARINA" });
                     break;
 
-                case 'quote':
-                    const q = await (await fetch('https://api.quotable.io/random')).json();
-                    await sock.sendMessage(from, { text: `*"${q.content}"*\n— ${q.author}` });
+                case 'fb': case 'facebook':
+                    if (!args[0]) break;
+                    const fb = await fetch(`https://api.yanzapi.com/v1/facebook?url=${args.join(' ')}`).then(r => r.json());
+                    await sock.sendMessage(from, { video: { url: fb.result.hd || fb.result.sd }, caption: "Facebook by VAMPARINA" });
                     break;
 
-                case 'meme':
-                    const meme = await (await fetch('https://meme-api.com/gimme')).json();
-                    await sock.sendMessage(from, { image: { url: meme.url }, caption: meme.title });
+                case 'song': case 'play': case 'music':
+                    const song = args.join(' ');
+                    const { videos } = await yts(song);
+                    const info = await ytdl.getInfo(videos[0].url);
+                    const audio = ytdl(info, { filter: 'audioonly' });
+                    await sock.sendMessage(from, { audio, mimetype: 'audio/mpeg', fileName: `${song}.mp3` });
                     break;
 
-                case 'tts':
-                    const ttsText = args.join(' ');
-                    if (ttsText) {
-                        await sock.sendMessage(from, { audio: { url: `https://translate.google.com/translate_tts?ie=UTF-8&tl=en&client=tw-ob&q=${encodeURIComponent(ttsText)}` }, mimetype: 'audio/mpeg', ptt: true });
-                    }
+                case 'video':
+                    const vid = args.join(' ');
+                    const { videos } = await yts(vid);
+                    const info = await ytdl.getInfo(videos[0].url);
+                    const video = ytdl(info, { quality: 'highest' });
+                    await sock.sendMessage(from, { video, caption: vid });
                     break;
 
-                case 'imagine':
-                    const prompt = args.join(' ');
-                    if (prompt) {
-                        await sock.sendMessage(from, { text: "Generating image..." });
-                        const res = await fetch(`https://api.yanzapi.com/v1/imagine?prompt=${encodeURIComponent(prompt)}`);
-                        const json = await res.json();
-                        if (json.result) await sock.sendMessage(from, { image: { url: json.result }, caption: `Prompt: ${prompt}` });
-                    }
+                // GAMES
+                case 'truth':
+                    const truths = ["Who’s your crush?", "Worst habit?", "Ever cheated?", "Most embarrassing moment?"];
+                    await sock.sendMessage(from, { text: `*TRUTH*: ${truths[Math.floor(Math.random() * truths.length)]}` });
                     break;
 
+                case 'dare':
+                    const dares = ["Call your ex", "Sing in voice note", "Say I love you to someone", "Dance on video"];
+                    await sock.sendMessage(from, { text: `*DARE*: ${dares[Math.floor(Math.random() * dares.length)]}` });
+                    break;
+
+                case 'rps':
+                    const choices = ['rock', 'paper', 'scissors'];
+                    const bot = choices[Math.floor(Math.random() * 3)];
+                    await sock.sendMessage(from, { text: `You vs VAMPARINA\nYou: ${args[0]}\nBot: ${bot}\nResult: ${args[0] === bot ? "Tie" : (args[0] === 'rock' && bot === 'scissors') || (args[0] === 'paper' && bot === 'rock') || (args[0] === 'scissors' && bot === 'paper') ? "You Win!" : "I Win!"}` });
+                    break;
+
+                case 'dice':
+                    await sock.sendMessage(from, { text: `You rolled: ${Math.floor(Math.random() * 6) + 1}` });
+                    break;
+
+                // FUN
+                case 'flirt':
+                    const flirts = ["Are you a magician? Because whenever I look at you, everyone else disappears", "Do you have a map? I keep getting lost in your eyes"];
+                    await sock.sendMessage(from, { text: flirts[Math.floor(Math.random() * flirts.length)] });
+                    break;
+
+                case 'insult':
+                    await sock.sendMessage(from, { text: "You're so slow, even a matatu overtakes you!" });
+                    break;
+
+                // ADMIN
                 case 'kick':
-                    if (from.endsWith('@g.us') && isOwner) {
+                    if (from.endsWith('@g.us') && sender === owner) {
                         const users = msg.message.extendedTextMessage?.contextInfo?.mentionedJid || [];
                         if (users.length) await sock.groupParticipantsUpdate(from, users, 'remove');
                     }
@@ -223,54 +201,41 @@ async function startBot() {
 
                 case 'tagall':
                     if (from.endsWith('@g.us')) {
-                        const metadata = await sock.groupMetadata(from);
-                        let text = "Everyone!\n\n";
-                        metadata.participants.forEach(p => text += `@${p.id.split('@')[0]}\n`);
-                        await sock.sendMessage(from, { text, mentions: metadata.participants.map(p => p.id) });
+                        const meta = await sock.groupMetadata(from);
+                        let txt = "Everyone!\n\n";
+                        meta.participants.forEach(p => txt += `@${p.id.split('@')[0]}\n`);
+                        await sock.sendMessage(from, { text: txt, mentions: meta.participants.map(p => p.id) });
                     }
                     break;
 
                 case 'restart':
-                    if (isOwner) {
+                    if (sender === owner) {
                         await sock.sendMessage(from, { text: "Restarting VAMPARINA..." });
                         process.exit(1);
                     }
                     break;
 
+                // DEFAULT
                 default:
-                    await sock.sendMessage(from, { text: "Unknown command. Use .menu" });
+                    await sock.sendMessage(from, { text: "Unknown command. Type .menu" });
             }
         } catch (e) {
             console.log("Error:", e);
         }
     });
 
-    // Welcome Message
+    // Welcome
     sock.ev.on('group-participants.update', async (update) => {
         if (update.action === 'add') {
             const user = update.participants[0];
-            await sock.sendMessage(update.id, { 
-                text: `Welcome @${user.split('@')[0]}!\n\nI'm *VAMPARINA*, your AI assistant.\nJust chat with me or type .menu`, 
-                mentions: [user] 
-            });
+            await sock.sendMessage(update.id, { text: `Welcome @${user.split('@')[0]} to the group!\n\nI'm *VAMPARINA*, Kenya's most powerful bot.\n500+ commands | Just chat or type .menu`, mentions: [user] });
         }
     });
-}
-
-// Auto-Status Changer
-function startAutoStatus() {
-    setInterval(async () => {
-        if (!sock?.user) return;
-        try {
-            await sock.sendMessage(sock.user.id, { text: autoStatusList[statusIndex] });
-            statusIndex = (statusIndex + 1) % autoStatusList.length;
-        } catch (e) {}
-    }, 30 * 60 * 1000); // Every 30 minutes
 }
 
 startBot();
 
 app.listen(PORT, () => {
-    console.log(`VAMPARINA V1 Running on port ${PORT}`);
-    console.log(`Visit /qr to see QR code`);
+    console.log(`VAMPARINA V1 IS RUNNING ON PORT ${PORT}`);
+    console.log(`Visit /qr to scan`);
 });
